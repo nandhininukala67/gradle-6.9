@@ -73,3 +73,71 @@ public class PayoutTxnProcessService extends BaseThreadBasedPollingService {
         Logger.log(evt);
     }
 }
+
+
+
+
+package com.sarvatra.rtsp.service;
+
+import com.sarvatra.common.util.SarvatraDateUtil;
+import com.sarvatra.rtsp.cache.InstituteCache;
+import com.sarvatra.rtsp.ee.MerchantPayoutDetails;
+import com.sarvatra.rtsp.manager.MerchantPayoutManager;
+import com.sarvatra.rtsp.server.InstituteCacheHelper;
+import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.jpos.util.LogEvent;
+import org.jpos.util.Logger;
+
+import java.util.*;
+import java.util.concurrent.CountDownLatch;
+
+public class PayoutTxnProcessService extends BaseThreadBasedPollingService {
+
+    private static final int Max Thread=30;
+    private static final int TxnPerThraed=1000;
+
+    @Override
+    public String toString() {
+        return super.toString() + "~" + getName();
+    }
+
+    public void process() throws InterruptedException {
+        InstituteCache instituteCache = InstituteCacheHelper.getInstitute(institute);
+        try {
+
+            getLog().info("######## getting payout transaction list");
+            List<MerchantPayoutDetails> payoutTxnList = org.jpos.ee.DB.exec(db ->
+                    new MerchantPayoutManager(db).getMerchantPayoutTransactionList(new SarvatraDateUtil().getStartOfDay()));
+
+             logPayoutSummary(payoutTxnList);
+
+            if (payoutTxnList.isEmpty()) {
+                getLog().info("No payout transactions found");
+                return;
+            }
+
+            // Queue payout transactions
+            CountDownLatch latch = new CountDownLatch(payoutTxnList.size());
+            getLog().info("Payout Txn Details Size :"+payoutTxnList.size());
+            payoutTxnList.forEach(payoutDetails -> getThreadPoolExecutor().execute(new MerchantPayoutFeature(payoutDetails, instituteCache, transactionName, transactionManagerQueue, latch, getLog())));
+
+            latch.await();
+            getLog().info("Done with merchant payout service");
+
+        } catch (Exception ex) {
+            getLog().info("Exception occurred: " + ExceptionUtils.getStackTrace(ex));
+        }
+    }
+
+
+    private void logPayoutSummary(List<MerchantPayoutDetails> payoutTxnList) {
+        LogEvent evt = getLog().createLogEvent("Merchant Payout Summary");
+        evt.addMessage(LOG_SEPARATOR);
+        evt.addMessage("Start Date        | " + new SarvatraDateUtil().getStartOfDay());
+        evt.addMessage("Payout count      | " + payoutTxnList.size());
+        evt.addMessage("Transaction Name  | " + this.transactionName);
+        evt.addMessage(LOG_SEPARATOR);
+        Logger.log(evt);
+    }
+}
+
